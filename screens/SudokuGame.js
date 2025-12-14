@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity, Alert, ActivityIndicator, ScrollView, Platform } from 'react-native';
 import SudokuStyles from './SudokuGame.styles';
 import sudoku from 'sudoku';
+import { useAuth } from '../hooks/useAuth'; 
+import { db } from '../firebase';
+import { doc, updateDoc, arrayUnion, setDoc, getDoc, collection, addDoc, serverTimestamp, query, orderBy, limit, getDocs } from 'firebase/firestore';
 
 const generatePuzzleWithSolution = () => {
-  const rawPuzzle = sudoku.makepuzzle(); // returns array of 81 values (nulls and numbers 0–8)
+  const rawPuzzle = sudoku.makepuzzle();
   const rawSolution = sudoku.solvepuzzle(rawPuzzle);
 
   const puzzle = [];
@@ -19,25 +22,59 @@ const generatePuzzleWithSolution = () => {
 };
 
 export default function SudokuGame({ navigation }) {
-  const { puzzle: initial, solution } = generatePuzzleWithSolution();
-  const [initialPuzzle, setInitialPuzzle] = useState(initial);
-  const [puzzle, setPuzzle] = useState(JSON.parse(JSON.stringify(initial)));
-  const [solvedPuzzle, setSolvedPuzzle] = useState(solution);
+  const { user } = useAuth(); 
+  const [initialPuzzle, setInitialPuzzle] = useState([]);
+  const [puzzle, setPuzzle] = useState([]);
+  const [solvedPuzzle, setSolvedPuzzle] = useState([]);
   const [selectedCell, setSelectedCell] = useState(null);
-  const [validationResult, setValidationResult] = useState('');
   const [timer, setTimer] = useState(0);
-  const [topTimes, setTopTimes] = useState([]); //toptime
   const [isActive, setIsActive] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [cellStatus, setCellStatus] = useState([]); 
+  const [leaderboard, setLeaderboard] = useState([]); 
+  const [gameWon, setGameWon] = useState(false); 
+
+  useEffect(() => {
+    startNewGame();
+    fetchLeaderboard();
+  }, []);
 
   useEffect(() => {
     let interval = null;
-    if (isActive) {
+    if (isActive && !gameWon) {
       interval = setInterval(() => setTimer(t => t + 1), 1000);
-    } else if (!isActive && timer !== 0) {
-      clearInterval(interval);
     }
     return () => clearInterval(interval);
-  }, [isActive, timer]);
+  }, [isActive, gameWon]);
+
+  const fetchLeaderboard = async () => {
+    try {
+      const q = query(collection(db, "leaderboard"), orderBy("time", "asc"), limit(10));
+      const querySnapshot = await getDocs(q);
+      const scores = [];
+      querySnapshot.forEach((doc) => {
+        scores.push(doc.data());
+      });
+      setLeaderboard(scores);
+    } catch (error) {
+      console.error("Error fetching leaderboard:", error);
+    }
+  };
+
+  const startNewGame = () => {
+    setLoading(true);
+    const { puzzle: newPuzzle, solution: newSolution } = generatePuzzleWithSolution();
+    setInitialPuzzle(newPuzzle);
+    setPuzzle(JSON.parse(JSON.stringify(newPuzzle)));
+    setSolvedPuzzle(newSolution);
+    setCellStatus(Array(9).fill().map(() => Array(9).fill(null)));
+    setTimer(0);
+    setIsActive(true);
+    setGameWon(false);
+    setSelectedCell(null);
+    setLoading(false);
+    fetchLeaderboard(); 
+  };
 
   const formatTime = (time) => {
     const minutes = Math.floor(time / 60);
@@ -45,169 +82,290 @@ export default function SudokuGame({ navigation }) {
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  const formatUser = (email) => {
+    if (!email) return "Guest";
+    if (email === 'Guest (You)') return email;
+    return email.split('@')[0];
+  };
+
   const isInitialCell = (row, col) => initialPuzzle[row][col] !== 0;
 
-  const validatePuzzle = () => {
-    const isCorrect = JSON.stringify(puzzle) === JSON.stringify(solvedPuzzle);
-    setValidationResult(isCorrect ? 'correct' : 'incorrect');
-    if (isCorrect) {
-      setIsActive(false);
-      const newTime = timer;
-      setTopTimes(prev => {
-        const updated = [...prev, newTime].sort((a, b) => a - b).slice(0, 10);
-        return updated;
-      });
+  const handleCellClick = (row, col) => {
+    if (!isInitialCell(row, col) && !gameWon) {
+      setSelectedCell({ row, col });
     }
-    
   };
 
-  const solvePuzzle = () => {
-    setPuzzle(JSON.parse(JSON.stringify(solvedPuzzle)));
-    setIsActive(false);
+  const handleNumberClick = (num) => {
+    if (selectedCell && !gameWon) {
+      const { row, col } = selectedCell;
+      const newPuzzle = [...puzzle.map(r => [...r])];
+      newPuzzle[row][col] = num;
+      setPuzzle(newPuzzle);
+
+      const newStatus = [...cellStatus.map(r => [...r])];
+      newStatus[row][col] = null;
+      setCellStatus(newStatus);
+    }
   };
 
-  const resetPuzzle = () => {
-    const { puzzle: newPuzzle, solution: newSolution } = generatePuzzleWithSolution();
-    setInitialPuzzle(newPuzzle);
-    setPuzzle(JSON.parse(JSON.stringify(newPuzzle)));
-    setSolvedPuzzle(newSolution);
-    setValidationResult('');
-    setTimer(0);
-    setIsActive(true);
-    setSelectedCell(null);
+  const clearSelectedCell = () => {
+    if (selectedCell && !gameWon) {
+      const { row, col } = selectedCell;
+      const newPuzzle = [...puzzle.map(r => [...r])];
+      newPuzzle[row][col] = 0;
+      setPuzzle(newPuzzle);
+
+      const newStatus = [...cellStatus.map(r => [...r])];
+      newStatus[row][col] = null;
+      setCellStatus(newStatus);
+    }
+  };
+
+  const saveScoreToFirebase = async () => {
+    if (!user) return; 
+
+    try {
+      const userRef = doc(db, "users", user.uid);
+      const docSnap = await getDoc(userRef);
+
+      if (docSnap.exists()) {
+        await updateDoc(userRef, { scores: arrayUnion(timer) });
+      } else {
+        await setDoc(userRef, { email: user.email, scores: [timer] });
+      }
+
+      await addDoc(collection(db, "leaderboard"), {
+        email: user.email,
+        time: timer,
+        date: serverTimestamp()
+      });
+      
+      fetchLeaderboard(); 
+    } catch (error) {
+      console.error("Error saving score: ", error);
+    }
+  };
+
+  const validatePuzzle = async () => {
+    const newStatus = [...cellStatus.map(r => [...r])];
+    let isComplete = true;
+    let hasErrors = false;
+
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        if (!isInitialCell(r, c)) {
+          const value = puzzle[r][c];
+          const correctValue = solvedPuzzle[r][c];
+
+          if (value !== 0) {
+            if (value === correctValue) {
+              newStatus[r][c] = 'correct';
+            } else {
+              newStatus[r][c] = 'error';
+              hasErrors = true;
+            }
+          } else {
+            newStatus[r][c] = null;
+            isComplete = false;
+          }
+        }
+      }
+    }
+    setCellStatus(newStatus);
+
+    if (isComplete && !hasErrors) {
+      setGameWon(true);
+      setIsActive(false);
+      
+      if (user) {
+        await saveScoreToFirebase();
+        const msg = `You solved it in ${formatTime(timer)}!`;
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert("Victory! 🏆", msg);
+      } else {
+        const guestEntry = { email: 'Guest (You)', time: timer };
+        setLeaderboard(prev => [...prev, guestEntry].sort((a,b) => a.time - b.time).slice(0, 10));
+
+        const msg = `You solved it in ${formatTime(timer)}!`;
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert("Victory! 🏆", msg);
+      }
+    }
   };
 
   const getHint = () => {
+    if (gameWon) return;
     for (let row = 0; row < 9; row++) {
       for (let col = 0; col < 9; col++) {
         if (puzzle[row][col] === 0) {
           const newPuzzle = [...puzzle.map(r => [...r])];
           newPuzzle[row][col] = solvedPuzzle[row][col];
           setPuzzle(newPuzzle);
+          setTimer(t => t + 10);
+          
+          const newStatus = [...cellStatus.map(r => [...r])];
+          newStatus[row][col] = 'correct';
+          setCellStatus(newStatus);
           return;
         }
       }
     }
   };
 
-  const handleCellClick = (row, col) => {
-    if (!isInitialCell(row, col)) {
-      setSelectedCell({ row, col });
-    }
+  const handleSignUpToSave = () => {
+    navigation.navigate('SignUp', { score: timer });
   };
 
-  const handleNumberClick = (num) => {
-    if (selectedCell) {
-      const { row, col } = selectedCell;
-      if (!isInitialCell(row, col)) {
-        const newPuzzle = [...puzzle.map(r => [...r])];
-        newPuzzle[row][col] = num;
-        setPuzzle(newPuzzle);
-      }
-    }
+  // ✅ FIXED: Navigation Logic
+  const handleExit = () => {
+    // We use replace because MenuScreen replaced itself with SudokuGame.
+    // 'replace' brings us back to Menu cleanly without stacking history.
+    navigation.replace('Menu');
   };
 
-  const clearSelectedCell = () => {
-    if (selectedCell) {
-      const { row, col } = selectedCell;
-      if (!isInitialCell(row, col)) {
-        const newPuzzle = [...puzzle.map(r => [...r])];
-        newPuzzle[row][col] = 0;
-        setPuzzle(newPuzzle);
-      }
-    }
-  };
+  if (loading) {
+    return (
+      <View style={SudokuStyles.scrollContainer}>
+        <ActivityIndicator size="large" color="#2a9d8f" />
+      </View>
+    );
+  }
 
   return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-      {/* Wrap Sudoku Game + Leaderboard in the same row */}
-      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+    <ScrollView contentContainerStyle={SudokuStyles.scrollContainer}>
+      <View style={SudokuStyles.mainLayout}>
         
-        {/* Left Side: Sudoku Game */}
+        {/* GAME SECTION */}
         <View style={SudokuStyles.container}>
-          <View style={SudokuStyles.gameContainer}>
-            <TouchableOpacity onPress={() => navigation.navigate('Menu')} style={SudokuStyles.backButton}>
-              <Text style={SudokuStyles.buttonText}>Back</Text>
+          <View style={SudokuStyles.headerContainer}>
+            {/* ✅ FIXED: Uses handleExit function */}
+            <TouchableOpacity onPress={handleExit} style={SudokuStyles.backButton}>
+              <Text style={SudokuStyles.backButtonText}>Exit</Text>
             </TouchableOpacity>
-  
-            <Text style={SudokuStyles.header}>Sudoku</Text>
-  
-            <View style={SudokuStyles.statusContainer}>
-              <Text style={SudokuStyles.timeText}>Time: {formatTime(timer)}</Text>
-              <TouchableOpacity onPress={resetPuzzle} style={SudokuStyles.button}>
-                <Text style={SudokuStyles.buttonText}>New Game</Text>
-              </TouchableOpacity>
-            </View>
-  
-            {validationResult !== '' && (
-              <Text style={validationResult === 'correct' ? SudokuStyles.correctText : SudokuStyles.incorrectText}>
-                {validationResult === 'correct' ? 'Puzzle solved correctly! 🎉' : 'Not quite right yet. Keep trying!'}
-              </Text>
-            )}
-  
+            <Text style={SudokuStyles.timerText}>{formatTime(timer)}</Text>
+          </View>
+
+          <Text style={SudokuStyles.title}>Sudoku</Text>
+          {!user && <Text style={SudokuStyles.guestText}>Playing as Guest</Text>}
+
+          <View style={SudokuStyles.gameContainer}>
             <View style={SudokuStyles.grid}>
               {puzzle.map((row, rowIndex) =>
-                row.map((cell, colIndex) => (
-                  <TouchableOpacity
-                    key={`${rowIndex}-${colIndex}`}
-                    style={[
-                      SudokuStyles.cell,
-                      isInitialCell(rowIndex, colIndex) ? SudokuStyles.initialCell : SudokuStyles.editableCell
-                    ]}
-                    onPress={() => handleCellClick(rowIndex, colIndex)}
-                  >
-                    {cell !== 0 && <Text style={SudokuStyles.cellText}>{cell}</Text>}
-                    {cell === 0 &&
-                      selectedCell &&
-                      selectedCell.row === rowIndex &&
-                      selectedCell.col === colIndex && (
-                        <Text style={SudokuStyles.cursor}>|</Text>
-                      )}
-                  </TouchableOpacity>
-                ))
+                row.map((cell, colIndex) => {
+                  const isSelected = selectedCell?.row === rowIndex && selectedCell?.col === colIndex;
+                  const isRightBorder = (colIndex + 1) % 3 === 0 && colIndex !== 8;
+                  const isBottomBorder = (rowIndex + 1) % 3 === 0 && rowIndex !== 8;
+                  const isInitial = isInitialCell(rowIndex, colIndex);
+
+                  let statusStyle = null;
+                  if (!isInitial) {
+                    if (cellStatus[rowIndex][colIndex] === 'correct') statusStyle = SudokuStyles.correctCell;
+                    if (cellStatus[rowIndex][colIndex] === 'error') statusStyle = SudokuStyles.errorCell;
+                  }
+
+                  return (
+                    <TouchableOpacity
+                      key={`${rowIndex}-${colIndex}`}
+                      style={[
+                        SudokuStyles.cell,
+                        isRightBorder && SudokuStyles.cellRightBorder,
+                        isBottomBorder && SudokuStyles.cellBottomBorder,
+                        isInitial ? SudokuStyles.initialCell : SudokuStyles.editableCell,
+                        statusStyle, 
+                        isSelected && SudokuStyles.selectedCell 
+                      ]}
+                      onPress={() => handleCellClick(rowIndex, colIndex)}
+                      disabled={isInitial}
+                    >
+                      <Text style={[
+                        SudokuStyles.cellText,
+                        isInitial && SudokuStyles.initialText,
+                        (!isInitial && cellStatus[rowIndex][colIndex] === 'error') && SudokuStyles.errorText
+                      ]}>
+                        {cell !== 0 ? cell : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  )
+                })
               )}
             </View>
-  
-            <View style={SudokuStyles.numberPad}>
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
-                <TouchableOpacity key={num} style={SudokuStyles.numButton} onPress={() => handleNumberClick(num)}>
-                  <Text style={SudokuStyles.buttonText}>{num}</Text>
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity style={SudokuStyles.numButton} onPress={clearSelectedCell}>
-                <Text style={SudokuStyles.buttonText}>Clear</Text>
-              </TouchableOpacity>
-            </View>
-  
-            <View style={SudokuStyles.controlButtons}>
-              <TouchableOpacity onPress={validatePuzzle} style={SudokuStyles.controlButton}>
-                <Text style={SudokuStyles.buttonText}>Check</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={getHint} style={SudokuStyles.controlButton}>
-                <Text style={SudokuStyles.buttonText}>Hint</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={solvePuzzle} style={SudokuStyles.controlButton}>
-                <Text style={SudokuStyles.buttonText}>Solve</Text>
-              </TouchableOpacity>
+
+            {/* CONTROLS */}
+            <View style={SudokuStyles.controls}>
+              {!gameWon ? (
+                <>
+                  <View style={SudokuStyles.numpad}>
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+                      <TouchableOpacity 
+                        key={num} 
+                        style={SudokuStyles.numButton} 
+                        onPress={() => handleNumberClick(num)}
+                      >
+                        <Text style={SudokuStyles.numButtonText}>{num}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    <TouchableOpacity style={[SudokuStyles.numButton, SudokuStyles.clearButton]} onPress={clearSelectedCell}>
+                      <Text style={SudokuStyles.numButtonText}>X</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={SudokuStyles.actionButtons}>
+                    <TouchableOpacity onPress={getHint} style={SudokuStyles.actionBtn}>
+                      <Text style={SudokuStyles.actionBtnText}>Hint (+10s)</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => validatePuzzle()} style={[SudokuStyles.actionBtn, SudokuStyles.checkBtn]}>
+                      <Text style={SudokuStyles.actionBtnText}>Check</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                <View style={SudokuStyles.victoryContainer}>
+                  <Text style={SudokuStyles.victoryText}>Puzzle Solved!</Text>
+                  
+                  {!user && (
+                    <TouchableOpacity onPress={handleSignUpToSave} style={[SudokuStyles.playAgainBtn, { backgroundColor: '#e9c46a', marginBottom: 10 }]}>
+                      <Text style={[SudokuStyles.playAgainText, { color: '#264653' }]}>Sign Up to Save Score 💾</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity onPress={startNewGame} style={SudokuStyles.playAgainBtn}>
+                    <Text style={SudokuStyles.playAgainText}>Play Again 🔄</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           </View>
         </View>
-  
-        {/* Right Side: Leaderboard */}
-        <View style={[SudokuStyles.leaderboardContainer, { marginLeft: 16 }]}>
-          <Text style={SudokuStyles.header}>Top 10 Times</Text>
-          {topTimes.length === 0 ? (
-            <Text>No records yet.</Text>
+
+        {/* LEADERBOARD SECTION */}
+        <View style={SudokuStyles.leaderboardPanel}>
+          <Text style={SudokuStyles.leaderboardTitle}>🏆 Top 10 Times</Text>
+          {leaderboard.length === 0 ? (
+            <Text style={SudokuStyles.noScores}>Loading scores...</Text>
           ) : (
-            topTimes.map((time, index) => (
-              <Text key={index} style={SudokuStyles.timeEntry}>
-                #{index + 1}: {formatTime(time)}
-              </Text>
+            leaderboard.map((item, index) => (
+              <View key={index} style={[
+                SudokuStyles.leaderboardRow, 
+                item.email === 'Guest (You)' && { backgroundColor: '#fff3cd' } 
+              ]}>
+                <Text style={SudokuStyles.rankText}>#{index + 1}</Text>
+                <View style={{flex:1, paddingHorizontal: 10}}>
+                  <Text style={[
+                    SudokuStyles.leaderboardUser,
+                    item.email === 'Guest (You)' && { fontWeight: 'bold', color: '#e76f51' }
+                  ]} numberOfLines={1}>
+                    {formatUser(item.email)}
+                  </Text>
+                </View>
+                <Text style={SudokuStyles.leaderboardTime}>{formatTime(item.time)}</Text>
+              </View>
             ))
           )}
+          {!user && !gameWon && (
+            <Text style={SudokuStyles.guestHint}>Log in (or win) to see your name here!</Text>
+          )}
         </View>
-  
+
       </View>
-    </View>
+    </ScrollView>
   );
 }

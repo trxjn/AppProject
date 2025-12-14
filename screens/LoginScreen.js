@@ -28,6 +28,7 @@ export default function LoginScreen({ navigation }) {
   };
 
   const handleGuestLogin = () => {
+    // Auth context will remain null, effectively acting as guest
     navigation.replace('Menu');
   };
 

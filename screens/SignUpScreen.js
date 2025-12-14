@@ -1,12 +1,17 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, Button, StyleSheet, Alert, ActivityIndicator } from 'react-native';
-import { auth } from 'firebase/app'; // Import the Firebase authentication object
-import { createUserWithEmailAndPassword } from 'firebase/auth'; // Import the auth method
+import { auth, db } from '../firebase'; // Import db
+import { createUserWithEmailAndPassword } from 'firebase/auth'; 
+// Import Firestore functions
+import { doc, setDoc, updateDoc, arrayUnion, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 
-export default function SignUpScreen({ navigation }) {
+export default function SignUpScreen({ navigation, route }) { // Add route prop
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false); 
+
+  // Check if a score was passed from the game
+  const scoreToSave = route.params?.score;
 
   const handleSignUp = async () => {
     if (!email || !password) {
@@ -17,8 +22,27 @@ export default function SignUpScreen({ navigation }) {
     setIsLoading(true);
 
     try {
-      await createUserWithEmailAndPassword(auth, email, password);
-      Alert.alert('Success', 'Account created!');
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+
+      // Create User Document
+      await setDoc(doc(db, "users", user.uid), {
+        email: user.email,
+        scores: scoreToSave ? [scoreToSave] : [] // Initialize with score if present
+      });
+
+      // If there is a pending score, save to Global Leaderboard too
+      if (scoreToSave) {
+        await addDoc(collection(db, "leaderboard"), {
+          email: user.email,
+          time: scoreToSave,
+          date: serverTimestamp()
+        });
+        Alert.alert('Success', 'Account created and your score was saved! 🏆');
+      } else {
+        Alert.alert('Success', 'Account created!');
+      }
+
       navigation.replace('Menu');
     } catch (error) {
       Alert.alert('Sign Up Error', error.message);
@@ -37,6 +61,14 @@ export default function SignUpScreen({ navigation }) {
         <Text style={styles.logo}>🧩</Text>
         <Text style={styles.title}>Create Account</Text>
 
+        {scoreToSave && (
+          <View style={styles.scoreAlert}>
+            <Text style={styles.scoreText}>
+              Sign up now to save your time of {scoreToSave}s!
+            </Text>
+          </View>
+        )}
+
         <TextInput
           placeholder="Email"
           style={styles.input}
@@ -52,7 +84,7 @@ export default function SignUpScreen({ navigation }) {
         />
 
         <View style={styles.buttonWrapper}>
-          <Button title="Sign Up" color="#2a9d8f" onPress={handleSignUp} />
+          <Button title="Sign Up & Save" color="#2a9d8f" onPress={handleSignUp} />
         </View>
 
         {isLoading && (
@@ -80,4 +112,17 @@ const styles = StyleSheet.create({
   buttonWrapper: { marginTop: 10, marginBottom: 10 },
   link: { marginTop: 10, color: '#2a9d8f', textAlign: 'center' },
   spinner: { marginTop: 20 },
+  scoreAlert: {
+    backgroundColor: '#d4edda',
+    padding: 10,
+    borderRadius: 5,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#c3e6cb'
+  },
+  scoreText: {
+    color: '#155724',
+    textAlign: 'center',
+    fontWeight: 'bold'
+  }
 });

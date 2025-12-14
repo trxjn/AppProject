@@ -1,24 +1,20 @@
-// Import the functions you need from the SDKs you need
+// firebase.js
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth"; // Import Firebase Authentication
-import { getFirestore } from "firebase/firestore"; // Optionally import Firestore if you're using it
+import { getAuth } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 
-// Your web app's Firebase configuration
+// PASTE YOUR CONFIG HERE
 const firebaseConfig = {
-  apiKey: "AIzaSyCojLKjcXAqDUgL6RGK9K5zl6K1eFQSbJI",
-  authDomain: "sudokuapp-8f34b.firebaseapp.com",
-  projectId: "sudokuapp-8f34b",
-  storageBucket: "sudokuapp-8f34b.firebasestorage.app",
-  messagingSenderId: "769017647928",
-  appId: "1:769017647928:web:db4cc6e543589417f0e7cd",
-  measurementId: "G-6LFNM6Q4F8"
+  apiKey: "AIzaSyARkYgZF9GNDqba8IMB2JN-DSqv_aCw1l4",
+  authDomain: "sudokuapp-21dd2.firebaseapp.com",
+  projectId: "sudokuapp-21dd2",
+  storageBucket: "sudokuapp-21dd2.firebasestorage.app",
+  messagingSenderId: "52067324744",
+  appId: "1:52067324744:web:6a3a66e8ace33d431c197d"
 };
 
-// Initialize Firebase
 const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
 
-// Initialize Firebase Auth and Firestore
-const auth = getAuth(app); // Initialize Firebase Authentication
-const db = getFirestore(app); // Initialize Firestore (if used)
-
-export { auth, db }; // Export auth and db for use in other files
+export { auth, db };
